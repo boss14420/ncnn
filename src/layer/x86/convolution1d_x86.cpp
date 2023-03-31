@@ -77,6 +77,26 @@ int Convolution1D_x86::forward(const Mat& bottom_blob, Mat& top_blob, const Opti
 #else
         out_elempack = num_output % 4 == 0 ? 4 : 1;
 #endif
+        int in_elempack = weight_data_packed.elempack / out_elempack;
+        if (in_elempack != elempack) {
+            // TODO: generic solution for multiple inputs
+            if (bottom_blob_bordered.c > 1)
+                return -100;
+            Mat tmp, bottom2d = bottom_blob_bordered.channel(0);
+            bottom2d.dims = 2;
+            convert_packing(bottom2d, tmp, in_elempack, opt);
+
+            if (tmp.elempack != in_elempack)
+                return -100;
+
+            return forward(tmp, top_blob, opt);
+
+            //Mat tmp_out;
+            //forward(tmp, tmp_out, opt);
+
+            //convert_packing(tmp_out, top_blob, elempack, opt);
+            //return 0;
+        }
     }
 #endif // __SSE2__
     size_t out_elemsize = elemsize / elempack * out_elempack;
