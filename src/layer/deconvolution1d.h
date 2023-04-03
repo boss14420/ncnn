@@ -28,6 +28,8 @@ public:
 
     virtual int load_model(const ModelBin& mb);
 
+    virtual int create_pipeline(const Option &opt) override;
+
     virtual int forward(const Mat& bottom_blob, Mat& top_blob, const Option& opt) const;
 
 protected:
@@ -52,6 +54,7 @@ public:
 
     // model
     Mat weight_data;
+    Mat weight_data_transposed; // (outh, kernel_w, inh)
     Mat bias_data;
 };
 
