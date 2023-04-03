@@ -58,6 +58,36 @@ int Deconvolution1D::load_model(const ModelBin& mb)
     return 0;
 }
 
+int Deconvolution1D::create_pipeline(const Option &)
+{
+    if (dilation_w != 1)
+        return -100;
+
+    int inh = weight_data_size / num_output / kernel_w;
+    weight_data_transposed.create(
+            inh, kernel_w, num_output,
+            weight_data.elemsize, weight_data.elempack, weight_data.allocator);
+
+    float const *ink = (float const *)weight_data;
+    for (int p = 0; p < num_output; ++p)
+    {
+        float *outk = weight_data_transposed.channel(p);
+        for (int r = 0; r < inh; ++r)
+        {
+            for (int s = 0, c = 0; s < stride_w; ++s)
+            {
+                for (int origc = s; origc < kernel_w; origc += stride_w, ++c)
+                {
+                    outk[c * inh + r] = ink[r * kernel_w + origc];
+                }
+            }
+        }
+        ink += kernel_w * inh;
+    }
+
+    return 0;
+}
+
 static int deconvolution1d(const Mat& bottom_blob, Mat& top_blob, const Mat& weight_data, const Mat& bias_data, int kernel_w, int stride_w, int dilation_w, int activation_type, const Mat& activation_params, const Option& opt)
 {
     const int w = bottom_blob.w;
@@ -68,15 +98,74 @@ static int deconvolution1d(const Mat& bottom_blob, Mat& top_blob, const Mat& wei
 
     const int bias_term = bias_data.empty() ? 0 : 1;
 
+    #define NEW
+    #ifdef NEW
+    Mat bottom_blob_transposed(h, w);
+    for (int r = 0; r < h; ++r)
+        for (int c = 0; c < w; ++c)
+            ((float*)bottom_blob_transposed)[c*h+r]
+                                        = ((float const*)bottom_blob)[r*w+c];
+
+
+    // maximum num of strides per kernel
+    int n_stride = (kernel_w + stride_w - 1) / stride_w;
+    #endif
+
     #pragma omp parallel for num_threads(opt.num_threads)
     for (int p = 0; p < outh; p++)
     {
-        Mat out = top_blob.row_range(p, 1);
-
         const float bias = bias_term ? bias_data[p] : 0.f;
 
-        out.fill(bias);
+        #ifdef NEW
+        float *out = top_blob.row(p);
+        #else
+        Mat out = top_blob.row_range(p, 1);
 
+        out.fill(bias);
+        #endif
+
+        #ifdef NEW
+        for (int j = 0; j < outw; ++j)
+        {
+            float res = bias;
+            //float sum0 = bias, sum1 = bias, sum2 = bias, sum3 = bias;
+
+            // calculate input index
+            int jj = j / stride_w, kidx = j - jj * stride_w;
+            auto divmod = std::div(kidx, stride_w);
+            // kernel index after re-arange by prduce at ::create_pipeline
+            int new_kidx = n_stride * divmod.rem + divmod.quot;
+
+            const float* kptr = (const float*)weight_data
+                                + kernel_w * h * p + new_kidx * h;
+            const float* sptr = (const float*)bottom_blob_transposed + h * jj;
+
+            for (; (kidx < kernel_w) & (jj >= 0); kidx += stride_w, --jj)
+            {
+                for (int q = 0; q < h; ++q)
+                    res += kptr[q] * sptr[q];
+                #if 0
+                int q = 0;
+                for (q = 0; q + 4 <= h; q += 4)
+                {
+                    sum0 += kptr[q] * sptr[q];
+                    sum1 += kptr[q+1] * sptr[q+1];
+                    sum2 += kptr[q+2] * sptr[q+2];
+                    sum3 += kptr[q+3] * sptr[q+3];
+                }
+                for (; q < h; ++q)
+                    sum0 += kptr[q] * sptr[q];
+                #endif
+                kptr += h;
+                sptr -= h;
+            }
+
+            // res = sum0 + sum1 + sum2 + sum3;
+            out[j] = activation_ss(res, activation_type, activation_params);
+        }
+
+
+        #else
         for (int j = 0; j < w; j++)
         {
             float* outptr = (float*)out + j * stride_w;
@@ -105,6 +194,7 @@ static int deconvolution1d(const Mat& bottom_blob, Mat& top_blob, const Mat& wei
                 outptr[i] = activation_ss(outptr[i], activation_type, activation_params);
             }
         }
+        #endif
     }
 
     return 0;
@@ -132,7 +222,11 @@ int Deconvolution1D::forward(const Mat& bottom_blob, Mat& top_blob, const Option
     if (top_blob_bordered.empty())
         return -100;
 
+    #ifdef NEW
+    int ret = deconvolution1d(bottom_blob, top_blob_bordered, weight_data_transposed, bias_data, kernel_w, stride_w, dilation_w, activation_type, activation_params, opt);
+    #else
     int ret = deconvolution1d(bottom_blob, top_blob_bordered, weight_data, bias_data, kernel_w, stride_w, dilation_w, activation_type, activation_params, opt);
+    #endif
     if (ret != 0)
         return ret;
 
