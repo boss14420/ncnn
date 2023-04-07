@@ -113,39 +113,28 @@ void main()
     }
 
 #if NCNN_image_shader
-    for (int z = 0; z < psc(c); z++)
+    const int ymax = psc(h); // num of input channels
+
+    for (int y = 0; y < ymax; ++y)
     {
-        ivec2 sy = gy2 * stride_h;
+        ivec2 sx = gx2 * stride_w;
         int wx = 0;
 
-        for (int y = 0; y < kernel_h; y++)
+        for (int x = 0; x < kernel_w; ++x)
         {
-            ivec2 sx = gx2 * stride_w;
+            afp v0 = image3d_ld1(bottom_blob, ivec3(sx.x, y, 0));
+            afp v1 = image3d_ld1(bottom_blob, ivec3(sx.y, y, 0));
 
-            for (int x = 0; x < kernel_w; x++)
-            {
-                afp v0 = image3d_ld1(bottom_blob, ivec3(sx.x, sy.x, z));
-                afp v1 = image3d_ld1(bottom_blob, ivec3(sx.y, sy.x, z));
-                afp v2 = image3d_ld1(bottom_blob, ivec3(sx.x, sy.y, z));
-                afp v3 = image3d_ld1(bottom_blob, ivec3(sx.y, sy.y, z));
+            afp k0 = image3d_ld1(weight_blob, ivec3(wx, y, gy2.x));
+            afp k1 = image3d_ld1(weight_blob, ivec3(wx, y, gy2.y));
 
-                afp k0 = image3d_ld1(weight_blob, ivec3(wx, z, gz2.x));
-                afp k1 = image3d_ld1(weight_blob, ivec3(wx, z, gz2.y));
+            sum0 += v0 * k0;
+            sum1 += v1 * k0;
+            sum2 += v0 * k1;
+            sum3 += v0 * k1;
 
-                sum0 += v0 * k0;
-                sum1 += v1 * k0;
-                sum2 += v2 * k0;
-                sum3 += v3 * k0;
-                sum4 += v0 * k1;
-                sum5 += v1 * k1;
-                sum6 += v2 * k1;
-                sum7 += v3 * k1;
-
-                sx += dilation_w;
-                wx += 1;
-            }
-
-            sy += dilation_h;
+            sx += dilation_w;
+            wx += 1;
         }
     }
 #else
@@ -187,14 +176,10 @@ void main()
     sum3 = activation_afp(sum3, activation_type, activation_param_0, activation_param_1);
 
 #if NCNN_image_shader
-    image3d_st1(top_blob, ivec3(gx2.x, gy2.x, gz2.x), sum0);
-    image3d_st1(top_blob, ivec3(gx2.y, gy2.x, gz2.x), sum1);
-    image3d_st1(top_blob, ivec3(gx2.x, gy2.y, gz2.x), sum2);
-    image3d_st1(top_blob, ivec3(gx2.y, gy2.y, gz2.x), sum3);
-    image3d_st1(top_blob, ivec3(gx2.x, gy2.x, gz2.y), sum4);
-    image3d_st1(top_blob, ivec3(gx2.y, gy2.x, gz2.y), sum5);
-    image3d_st1(top_blob, ivec3(gx2.x, gy2.y, gz2.y), sum6);
-    image3d_st1(top_blob, ivec3(gx2.y, gy2.y, gz2.y), sum7);
+    image3d_st1(top_blob, ivec3(gx2.x, gy2.x, gz), sum0);
+    image3d_st1(top_blob, ivec3(gx2.y, gy2.x, gz), sum1);
+    image3d_st1(top_blob, ivec3(gx2.x, gy2.y, gz), sum2);
+    image3d_st1(top_blob, ivec3(gx2.y, gy2.y, gz), sum3);
 #else
     const int gi = gz * psc(outcstep) + gy * psc(outw) + gx;
 

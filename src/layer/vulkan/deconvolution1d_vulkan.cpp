@@ -22,9 +22,7 @@ namespace ncnn {
 Deconvolution1D_vulkan::Deconvolution1D_vulkan()
 {
     support_vulkan = true;
-#ifdef VKIMAGE
     support_image_storage = true;
-#endif
 
     crop = 0;
     output_crop = 0;
@@ -288,8 +286,6 @@ int Deconvolution1D_vulkan::upload_model(VkTransfer& cmd, const Option& opt)
 int Deconvolution1D_vulkan::forward(const VkMat& bottom_blob, VkMat& top_blob, VkCompute& cmd, const Option& opt) const
 {
     int w = bottom_blob.w;
-    int h = bottom_blob.h;
-    int channels = bottom_blob.c;
     size_t elemsize = bottom_blob.elemsize;
     int elempack = bottom_blob.elempack;
 
@@ -342,7 +338,7 @@ int Deconvolution1D_vulkan::forward(const VkMat& bottom_blob, VkMat& top_blob, V
 
     cmd.record_pipeline(pipeline_deconvolution, bindings, constants, top_blob_bordered);
 
-    if (pad_left > 0 || pad_right > 0)
+    if (pad_left > 0)
     {
         {
             VkMat reference_blob;
@@ -410,17 +406,13 @@ int Deconvolution1D_vulkan::forward(const VkMat& bottom_blob, VkMat& top_blob, V
 
 int Deconvolution1D_vulkan::forward(const VkImageMat& bottom_blob, VkImageMat& top_blob, VkCompute& cmd, const Option& opt) const
 {
-#ifdef VKIMAGE
     int w = bottom_blob.w;
-    int h = bottom_blob.h;
     size_t elemsize = bottom_blob.elemsize;
     int elempack = bottom_blob.elempack;
 
     const int kernel_extent_w = dilation_w * (kernel_w - 1) + 1;
-    const int kernel_extent_h = dilation_h * (kernel_h - 1) + 1;
 
     int outw = (w - 1) * stride_w + kernel_extent_w + output_pad_right;
-    int outh = (h - 1) * stride_h + kernel_extent_h + output_pad_bottom;
     int out_elempack = opt.use_shader_pack8 && num_output % 8 == 0 ? 8 : num_output % 4 == 0 ? 4 : 1;
     size_t out_elemsize = elemsize / elempack * out_elempack;
 
@@ -432,108 +424,48 @@ int Deconvolution1D_vulkan::forward(const VkImageMat& bottom_blob, VkImageMat& t
     }
 
     VkImageMat top_blob_bordered;
-    if (opt.use_sgemm_convolution)
+    if (pad_left > 0 || pad_right > 0 || (output_w > 0))
     {
-        const int maxk = kernel_w * kernel_h;
-
-        // gemm
-        VkImageMat top_blob_col;
-        {
-            top_blob_col.create(w * h, maxk * num_output / out_elempack, out_elemsize, out_elempack, opt.workspace_vkallocator);
-            if (top_blob_col.empty())
-                return -100;
-
-            std::vector<VkImageMat> bindings(3);
-            bindings[0] = bottom_blob;
-            bindings[1] = top_blob_col;
-            bindings[2] = weight_data_gpu_image;
-
-            std::vector<vk_constant_type> constants(6);
-            constants[0].i = bottom_blob.w;
-            constants[1].i = bottom_blob.h;
-            constants[2].i = bottom_blob.c;
-            constants[3].i = 0; // bottom_blob.cstep;
-            constants[4].i = top_blob_col.w;
-            constants[5].i = top_blob_col.h;
-
-            VkImageMat dispatcher;
-            dispatcher.w = (top_blob_col.w + 3) / 4;
-            dispatcher.h = top_blob_col.h;
-            dispatcher.c = 1;
-
-            cmd.record_pipeline(pipeline_deconvolution_gemm, bindings, constants, dispatcher);
-        }
-
-        // col2im
-        {
-            if (pad_left > 0 || pad_right > 0 || pad_top > 0 || pad_bottom > 0 || (output_w > 0 && output_h > 0))
-            {
-                top_blob_bordered.create(outw, outh, num_output / out_elempack, out_elemsize, out_elempack, opt.workspace_vkallocator);
-            }
-            else
-            {
-                top_blob_bordered.create(outw, outh, num_output / out_elempack, out_elemsize, out_elempack, opt.blob_vkallocator);
-            }
-            if (top_blob_bordered.empty())
-                return -100;
-
-            std::vector<VkImageMat> bindings(3);
-            bindings[0] = top_blob_col;
-            bindings[1] = top_blob_bordered;
-            bindings[2] = bias_data_gpu_image;
-
-            std::vector<vk_constant_type> constants(6);
-            constants[0].i = w;
-            constants[1].i = h;
-            constants[2].i = top_blob_bordered.w;
-            constants[3].i = top_blob_bordered.h;
-            constants[4].i = top_blob_bordered.c;
-            constants[5].i = 0; //top_blob_bordered.cstep;
-
-            cmd.record_pipeline(pipeline_deconvolution_col2im, bindings, constants, top_blob_bordered);
-        }
+        top_blob_bordered.create(outw, num_output / out_elempack,
+                                 out_elemsize, out_elempack,
+                                 opt.workspace_vkallocator);
     }
     else
     {
-        if (pad_left > 0 || pad_right > 0 || pad_top > 0 || pad_bottom > 0 || (output_w > 0 && output_h > 0))
-        {
-            top_blob_bordered.create(outw, outh, num_output / out_elempack, out_elemsize, out_elempack, opt.workspace_vkallocator);
-        }
-        else
-        {
-            top_blob_bordered.create(outw, outh, num_output / out_elempack, out_elemsize, out_elempack, opt.blob_vkallocator);
-        }
-        if (top_blob_bordered.empty())
-            return -100;
-
-        std::vector<VkImageMat> bindings(4);
-        bindings[0] = bottom_blob;
-        bindings[1] = top_blob_bordered;
-        bindings[2] = weight_data_gpu_image;
-        bindings[3] = bias_data_gpu_image;
-
-        std::vector<vk_constant_type> constants(10);
-        constants[0].i = bottom_blob.dims;
-        constants[1].i = bottom_blob.w;
-        constants[2].i = bottom_blob.h;
-        constants[3].i = bottom_blob.c;
-        constants[4].i = 0; //bottom_blob.cstep;
-        constants[5].i = top_blob_bordered.dims;
-        constants[6].i = top_blob_bordered.w;
-        constants[7].i = top_blob_bordered.h;
-        constants[8].i = top_blob_bordered.c;
-        constants[9].i = 0; //top_blob_bordered.cstep;
-
-        cmd.record_pipeline(pipeline_deconvolution, bindings, constants, top_blob_bordered);
+        top_blob_bordered.create(outw, num_output / out_elempack,
+                                 out_elemsize, out_elempack,
+                                 opt.blob_vkallocator);
     }
+    if (top_blob_bordered.empty())
+        return -100;
 
-    if (pad_left > 0 || pad_right > 0 || pad_top > 0 || pad_bottom > 0)
+    std::vector<VkImageMat> bindings(4);
+    bindings[0] = bottom_blob;
+    bindings[1] = top_blob_bordered;
+    bindings[2] = weight_data_gpu_image;
+    bindings[3] = bias_data_gpu_image;
+
+    std::vector<vk_constant_type> constants(10);
+    constants[0].i = bottom_blob.dims;
+    constants[1].i = bottom_blob.w;
+    constants[2].i = bottom_blob.h;
+    constants[3].i = bottom_blob.c;
+    constants[4].i = 0; //bottom_blob.cstep;
+    constants[5].i = top_blob_bordered.dims;
+    constants[6].i = top_blob_bordered.w;
+    constants[7].i = top_blob_bordered.h;
+    constants[8].i = top_blob_bordered.c;
+    constants[9].i = 0; //top_blob_bordered.cstep;
+
+    cmd.record_pipeline(pipeline_deconvolution, bindings, constants, top_blob_bordered);
+
+    if (pad_left > 0)
     {
         {
             VkImageMat reference_blob;
             reference_blob.dims = 2;
             reference_blob.w = top_blob_bordered.w - pad_left - pad_right;
-            reference_blob.h = top_blob_bordered.h - pad_top - pad_bottom;
+            reference_blob.h = top_blob_bordered.h * out_elempack;
             reference_blob.elempack = 1;
 
             std::vector<VkImageMat> crop_bottom_blobs(2);
@@ -545,37 +477,33 @@ int Deconvolution1D_vulkan::forward(const VkImageMat& bottom_blob, VkImageMat& t
         }
         if (top_blob.empty())
             return -100;
-
-        outw = top_blob.w;
-        outh = top_blob.h;
     }
-    else if (output_w > 0 && output_h > 0)
+    else if (output_w > 0)
     {
         int wcut = top_blob_bordered.w - output_w;
-        int hcut = top_blob_bordered.h - output_h;
 
         VkImageMat crop_param_blob(4, (size_t)4u, 1, opt.staging_vkallocator);
         int* crop_params = crop_param_blob.mapped();
 
-        if (pad_left == -233 || pad_right == -233 || pad_top == -233 || pad_bottom == -233)
+        if (pad_left == -233 || pad_right == -233)
         {
             // onnx padding=SAME_UPPER
             crop_params[0] = wcut / 2;
-            crop_params[1] = hcut / 2;
+            crop_params[1] = 0;
             crop_params[2] = 0;
             crop_params[3] = top_blob_bordered.w - wcut;
-            crop_params[4] = top_blob_bordered.h - hcut;
-            crop_params[5] = top_blob_bordered.c * out_elempack;
+            crop_params[4] = top_blob_bordered.h * out_elempack;
+            crop_params[5] = top_blob_bordered.c;
         }
-        else if (pad_left == -234 || pad_right == -234 || pad_top == -234 || pad_bottom == -234)
+        else if (pad_left == -234 || pad_right == -234)
         {
             // onnx padding=SAME_LOWER
             crop_params[0] = wcut - wcut / 2;
-            crop_params[1] = hcut - hcut / 2;
+            crop_params[1] = 0;
             crop_params[2] = 0;
             crop_params[3] = top_blob_bordered.w - wcut;
-            crop_params[4] = top_blob_bordered.h - hcut;
-            crop_params[5] = top_blob_bordered.c * out_elempack;
+            crop_params[4] = top_blob_bordered.h * out_elempack;
+            crop_params[5] = top_blob_bordered.c;
         }
 
         std::vector<VkImageMat> crop_inputs(2);
@@ -587,9 +515,6 @@ int Deconvolution1D_vulkan::forward(const VkImageMat& bottom_blob, VkImageMat& t
         top_blob = crop_outputs[0];
         if (top_blob.empty())
             return -100;
-
-        outw = top_blob.w;
-        outh = top_blob.h;
     }
     else
     {
@@ -597,7 +522,6 @@ int Deconvolution1D_vulkan::forward(const VkImageMat& bottom_blob, VkImageMat& t
     }
 
     return 0;
-#endif
 }
 
 } // namespace ncnn

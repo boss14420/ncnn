@@ -89,7 +89,6 @@ void main()
 
     const ivec2 gx2 = gx + ivec2(0, 1);
     const ivec2 gy2 = gy + ivec2(0, 1);
-    const ivec2 gz2 = gz + ivec2(0, 1);
 
     afpvec4 sum0;
     afpvec4 sum1;
@@ -117,51 +116,41 @@ void main()
     }
 
 #if NCNN_image_shader
-    for (int z = 0; z < psc(c); z++)
+    const int ymax = psc(h); // num of input channels
+
+    for (int y = 0; y < ymax; ++y)
     {
-        ivec2 sy = gy2 * stride_h;
+        ivec2 sx = gx2 * stride_w;
         int wx = 0;
 
-        for (int y = 0; y < kernel_h; y++)
+        for (int x = 0; x < kernel_w; ++x)
         {
-            ivec2 sx = gx2 * stride_w;
+            afpvec4 v0 = image3d_ld4(bottom_blob, ivec3(sx.x, y, 0));
+            afpvec4 v1 = image3d_ld4(bottom_blob, ivec3(sx.y, y, 0));
 
-            for (int x = 0; x < kernel_w; x++)
-            {
-                afpvec4 v0 = image3d_ld4(bottom_blob, ivec3(sx.x, sy.x, z));
-                afpvec4 v1 = image3d_ld4(bottom_blob, ivec3(sx.y, sy.x, z));
-                afpvec4 v2 = image3d_ld4(bottom_blob, ivec3(sx.x, sy.y, z));
-                afpvec4 v3 = image3d_ld4(bottom_blob, ivec3(sx.y, sy.y, z));
+            afpmat4 k0 = afpmat4(
+                image3d_ld4(weight_blob, ivec3(wx + 0, y, gy2.x)),
+                image3d_ld4(weight_blob, ivec3(wx + 1, y, gy2.x)),
+                image3d_ld4(weight_blob, ivec3(wx + 2, y, gy2.x)),
+                image3d_ld4(weight_blob, ivec3(wx + 3, y, gy2.x))
+            );
+            afpmat4 k1 = afpmat4(
+                image3d_ld4(weight_blob, ivec3(wx + 0, y, gy2.y)),
+                image3d_ld4(weight_blob, ivec3(wx + 1, y, gy2.y)),
+                image3d_ld4(weight_blob, ivec3(wx + 2, y, gy2.y)),
+                image3d_ld4(weight_blob, ivec3(wx + 3, y, gy2.y))
+            );
 
-                afpmat4 k0 = afpmat4(
-                    image3d_ld4(weight_blob, ivec3(wx + 0, z, gz2.x)),
-                    image3d_ld4(weight_blob, ivec3(wx + 1, z, gz2.x)),
-                    image3d_ld4(weight_blob, ivec3(wx + 2, z, gz2.x)),
-                    image3d_ld4(weight_blob, ivec3(wx + 3, z, gz2.x))
-                );
-                afpmat4 k1 = afpmat4(
-                    image3d_ld4(weight_blob, ivec3(wx + 0, z, gz2.y)),
-                    image3d_ld4(weight_blob, ivec3(wx + 1, z, gz2.y)),
-                    image3d_ld4(weight_blob, ivec3(wx + 2, z, gz2.y)),
-                    image3d_ld4(weight_blob, ivec3(wx + 3, z, gz2.y))
-                );
+            sum0 += v0 * k0;
+            sum1 += v1 * k0;
+            sum2 += v0 * k1;
+            sum3 += v1 * k1;
 
-                sum0 += v0 * k0;
-                sum1 += v1 * k0;
-                sum2 += v2 * k0;
-                sum3 += v3 * k0;
-                sum4 += v0 * k1;
-                sum5 += v1 * k1;
-                sum6 += v2 * k1;
-                sum7 += v3 * k1;
-
-                sx += dilation_w;
-                wx += 4;
-            }
-
-            sy += dilation_h;
+            sx += dilation_w;
+            wx += 4;
         }
     }
+
 #else
     const int ymax = psc(h); // num of input channels
     const int input_w = psc(w); // input size
@@ -217,14 +206,10 @@ void main()
     sum3 = activation_afpvec4(sum3, activation_type, activation_param_0, activation_param_1);
 
 #if NCNN_image_shader
-    image3d_st4(top_blob, ivec3(gx2.x, gy2.x, gz2.x), sum0);
-    image3d_st4(top_blob, ivec3(gx2.y, gy2.x, gz2.x), sum1);
-    image3d_st4(top_blob, ivec3(gx2.x, gy2.y, gz2.x), sum2);
-    image3d_st4(top_blob, ivec3(gx2.y, gy2.y, gz2.x), sum3);
-    image3d_st4(top_blob, ivec3(gx2.x, gy2.x, gz2.y), sum4);
-    image3d_st4(top_blob, ivec3(gx2.y, gy2.x, gz2.y), sum5);
-    image3d_st4(top_blob, ivec3(gx2.x, gy2.y, gz2.y), sum6);
-    image3d_st4(top_blob, ivec3(gx2.y, gy2.y, gz2.y), sum7);
+    image3d_st4(top_blob, ivec3(gx2.x, gy2.x, gz), sum0);
+    image3d_st4(top_blob, ivec3(gx2.y, gy2.x, gz), sum1);
+    image3d_st4(top_blob, ivec3(gx2.x, gy2.y, gz), sum2);
+    image3d_st4(top_blob, ivec3(gx2.y, gy2.y, gz), sum3);
 #else
     const int gi = gz * psc(outcstep) + gy * psc(outw) + gx;
 

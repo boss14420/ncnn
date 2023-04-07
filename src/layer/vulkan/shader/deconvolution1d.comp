@@ -97,32 +97,16 @@ void main()
     }
 
 #if NCNN_image_shader
-    for (int y = 0; y < kernel_h; y++)
+    int ymax = psc(h); // num of input channels
+    int xx = gx / stride_w;  // input block index
+    int widx = gx - xx * stride_w; // kernel index equivalent current input
+
+    for (; (widx < kernel_w) && (xx >= 0); widx += stride_w, --xx)
     {
-        int sys = (gy + y * dilation_h - (kernel_extent_h - 1));
-        if (sys < 0 || sys % stride_h != 0)
-            continue;
-
-        int sy = sys / stride_h;
-        if (sy >= psc(h))
-            continue;
-
-        for (int x = 0; x < kernel_w; x++)
+        for (int y = 0; y < ymax; ++y)
         {
-            int sxs = (gx + x * dilation_w - (kernel_extent_w - 1));
-            if (sxs < 0 || sxs % stride_w != 0)
-                continue;
-
-            int sx = sxs / stride_w;
-            if (sx >= psc(w))
-                continue;
-
-            int wx = y * kernel_w + x;
-
-            for (int z = 0; z < psc(c); z++)
-            {
-                sum += image3d_ld1(weight_blob, ivec3(wx, z, gz)) * image3d_ld1(bottom_blob, ivec3(sx, sy, z));
-            }
+            sum += image3d_ld1(weight_blob, ivec3(widx, y, gy))
+                   * image3d_ld1(bottom_blob, ivec3(xx, y, gz));
         }
     }
 #else

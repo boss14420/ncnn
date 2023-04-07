@@ -140,6 +140,8 @@ static int deconvolution1d(const Mat& bottom_blob, Mat& top_blob, const Mat& wei
                                 + kernel_w * h * p + new_kidx * h;
             const float* sptr = (const float*)bottom_blob_transposed + h * jj;
 
+            for (; jj >= w; kidx += stride_w, --jj, kptr += h, sptr -= h);
+
             for (; (kidx < kernel_w) & (jj >= 0); kidx += stride_w, --jj)
             {
                 for (int q = 0; q < h; ++q)
