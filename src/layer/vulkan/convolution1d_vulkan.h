@@ -48,6 +48,10 @@ public:
     VkImageMat bias_data_gpu_image;
 
     Pipeline* pipeline_convolution;
+    // using share memory, generic 
+    Pipeline* pipeline_convolution_local_memory;
+    // using share memory, stride = 1, dilation = 1
+    Pipeline* pipeline_convolution_s1d1;
 };
 
 } // namespace ncnn

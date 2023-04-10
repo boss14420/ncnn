@@ -1,0 +1,175 @@
+// Tencent is pleased to support the open source community by making ncnn available.
+//
+// Copyright (C) 2019 THL A29 Limited, a Tencent company. All rights reserved.
+//
+// Licensed under the BSD 3-Clause License (the "License"); you may not use this file except
+// in compliance with the License. You may obtain a copy of the License at
+//
+// https://opensource.org/licenses/BSD-3-Clause
+//
+// Unless required by applicable law or agreed to in writing, software distributed
+// under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+// CONDITIONS OF ANY KIND, either express or implied. See the License for the
+// specific language governing permissions and limitations under the License.
+
+#version 450
+
+#if NCNN_fp16_storage
+#extension GL_EXT_shader_16bit_storage: require
+#endif
+#if NCNN_fp16_arithmetic
+#extension GL_EXT_shader_explicit_arithmetic_types_float16: require
+#endif
+
+#extension GL_GOOGLE_include_directive: enable
+#include "vulkan_activation.comp"
+
+//#define LOCAL_MEMORY_UNROLL_INCH 128
+#define ZSTEP 4
+#define WORGROUP_SIZE_X 8
+#define WORGROUP_SIZE_Y 8
+
+//layout( local_size_x = WORGROUP_SIZE_X,
+//        local_size_y = WORGROUP_SIZE_Y,
+//        local_size_z = 1 ) in;
+
+layout (constant_id = 0) const int kernel_w = 1;
+layout (constant_id = 1) const int bias_term = 0;
+layout (constant_id = 2) const int activation_type = 0;
+layout (constant_id = 3) const float activation_param_0 = 0;
+layout (constant_id = 4) const float activation_param_1 = 0;
+
+#define shape_constant_id_offset 5
+layout (constant_id = shape_constant_id_offset + 0) const int w = 0;
+layout (constant_id = shape_constant_id_offset + 1) const int h = 0;
+layout (constant_id = shape_constant_id_offset + 2) const int c = 0;
+layout (constant_id = shape_constant_id_offset + 3) const int cstep = 0;
+
+layout (constant_id = shape_constant_id_offset + 4) const int outw = 0;
+layout (constant_id = shape_constant_id_offset + 5) const int outh = 0;
+layout (constant_id = shape_constant_id_offset + 6) const int outc = 0;
+layout (constant_id = shape_constant_id_offset + 7) const int outcstep = 0;
+
+layout (binding = 0) readonly buffer bottom_blob { sfpvec4 bottom_blob_data[]; };
+layout (binding = 1) writeonly buffer top_blob { sfp top_blob_data[]; };
+layout (binding = 2) readonly buffer weight_blob { sfpvec4 weight_data[]; };
+layout (binding = 3) readonly buffer bias_blob { sfp bias_data[]; };
+
+layout (push_constant) uniform parameter
+{
+    int w;
+    int h;
+    int c;
+    int cstep;
+
+    int outw;
+    int outh;
+    int outc;
+    int outcstep;
+} p;
+
+shared lfpvec4 tmp_k[WORGROUP_SIZE_Y][ZSTEP][kernel_w];
+shared lfpvec4 tmp_v[ZSTEP][(4 * WORGROUP_SIZE_X + kernel_w - 1)];
+
+void main()
+{
+    int gx = int(gl_GlobalInvocationID.x) * 4;
+    int gy = int(gl_GlobalInvocationID.y);
+
+    afp sum0;
+    afp sum1;
+    afp sum2;
+    afp sum3;
+
+    if (bias_term == 1)
+    {
+        afp b = buffer_ld1(bias_data, gy);
+        sum0 = b;
+        sum1 = b;
+        sum2 = b;
+        sum3 = b;
+    }
+    else
+    {
+        sum0 = afp(0.f);
+        sum1 = afp(0.f);
+        sum2 = afp(0.f);
+        sum3 = afp(0.f);
+    }
+
+    const int lx = int(gl_LocalInvocationID.x);
+    const int ly = int(gl_LocalInvocationID.y);
+
+    const int N = psc(h) * kernel_w;
+    const int zmax = psc(h);
+    const int xmax = psc(w);
+
+    int w_offset = gy * N;
+    // = gx of first invocation in the same workgroup
+    int v_offset = gx - lx * 4;
+
+    const int lv_per_x = 4 + (kernel_w - 1 + WORGROUP_SIZE_X - 1) / WORGROUP_SIZE_X;
+    const int lv = 4 * WORGROUP_SIZE_X + kernel_w - 1;
+
+    for (int z = 0; z < zmax; z += ZSTEP)
+    {
+        int step = min(ZSTEP, zmax - z);
+
+        // load to share memory
+
+        // assume ZSTEP <= WORGROUP_SIZE_Y
+        if (lx < step)
+        {
+            for (int x = 0; x < kernel_w; ++x)
+                tmp_k[ly][lx][x] = sfp2lfpvec4(
+                        weight_data[w_offset + lx * kernel_w + x]);
+        }
+        w_offset += step * kernel_w;
+
+        // assume ZSTEP <= WORGROUP_SIZE_Y
+        // assume WORGROUP_SIZE_X + kernel_w - 1 <= xmax
+        if (ly < step)
+            for (int x = lv_per_x * lx, xend = min(x + lv_per_x, lv); x < xend; ++x)
+                tmp_v[ly][x] = sfp2lfpvec4(
+                        bottom_blob_data[v_offset + ly * xmax + x]);
+        v_offset += step * xmax;
+
+        barrier();
+
+        for (int z4 = 0; z4 < step; ++z4)
+        {
+            for (int x = 0; x < kernel_w; ++x)
+            {
+                afpvec4 v0 = lfp2afpvec4(tmp_v[z4][lx * 4 + x + 0]);
+                afpvec4 v1 = lfp2afpvec4(tmp_v[z4][lx * 4 + x + 1]);
+                afpvec4 v2 = lfp2afpvec4(tmp_v[z4][lx * 4 + x + 2]);
+                afpvec4 v3 = lfp2afpvec4(tmp_v[z4][lx * 4 + x + 3]);
+
+                afpvec4 k = lfp2afpvec4(tmp_k[ly][z4][x]);
+
+                sum0 += dot(v0, k);
+                sum1 += dot(v1, k);
+                sum2 += dot(v2, k);
+                sum3 += dot(v3, k);
+            }
+        }
+
+        barrier();
+    }
+
+
+    sum0 = activation_afp(sum0, activation_type, activation_param_0, activation_param_1);
+    sum1 = activation_afp(sum1, activation_type, activation_param_0, activation_param_1);
+    sum2 = activation_afp(sum2, activation_type, activation_param_0, activation_param_1);
+    sum3 = activation_afp(sum3, activation_type, activation_param_0, activation_param_1);
+
+    if (gx >= psc(outw) || gy >= psc(outh))
+        return;
+
+    int gi = gy * psc(outw) + gx;
+
+    buffer_st1(top_blob_data, gi + 0, sum0);
+    if (gx + 1 < psc(outw)) buffer_st1(top_blob_data, gi + 1, sum1);
+    if (gx + 2 < psc(outw)) buffer_st1(top_blob_data, gi + 2, sum2);
+    if (gx + 3 < psc(outw)) buffer_st1(top_blob_data, gi + 3, sum3);
+}
