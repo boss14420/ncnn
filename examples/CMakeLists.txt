@@ -16,6 +16,7 @@ macro(ncnn_add_example name)
 endmacro()
 
 ncnn_add_example(binaryop)
+ncnn_add_example(tts)
 
 if(NCNN_PIXEL)
     if(NOT NCNN_SIMPLEOCV)
