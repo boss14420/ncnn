@@ -14,6 +14,7 @@
 
 #include "embed.h"
 
+#include <cmath>
 #include <string.h>
 
 namespace ncnn {
@@ -64,7 +65,7 @@ int Embed::forward(const Mat& bottom_blob, Mat& top_blob, const Option& opt) con
     {
         float* outptr = top_blob.row(q);
 
-        int word_index = ((const int*)bottom_blob)[q];
+        long word_index = std::lround(bottom_blob[q]);
 
         if (word_index < 0)
             word_index = 0;
